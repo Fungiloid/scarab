@@ -49,17 +49,17 @@ object Group {
   }
 
   private val getGroup: Long => IO[GroupDB] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getGroupQuery))
       .use(preparedQuery => preparedQuery.unique(id))
 
   private val getGroupRoles: Long => IO[List[RoleDB]] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getGroupRolesQuery))
       .use(preparedQuery => preparedQuery.stream(id, 1000).compile.toList)
 
   private val updateGroup: (GroupPut, Long) => EitherT[IO, ErrorJson, GroupDB] = (req, id) => {
-    val res: IO[Either[ErrorJson, GroupDB]] = Database.session.use { session =>
+    val res: IO[Either[ErrorJson, GroupDB]] = ScarabDatabase.session.use { session =>
       session.transaction.use { _ =>
         List(
           req.name.traverse_(name => session.prepareR(updateGroupQuery).use(pq => pq.unique(name, id))),
@@ -72,7 +72,7 @@ object Group {
 
 
   private val createGroup: GroupPost => IO[GroupDB] = (req) =>
-    Database.session.use { session =>
+    ScarabDatabase.session.use { session =>
       session.transaction.use { tx =>
         session
           .prepareR(createGroupQuery)
@@ -82,11 +82,11 @@ object Group {
     }
 
   private val getGroups: IO[List[GroupDB]] =
-    Database.session
+    ScarabDatabase.session
       .use(session => session.execute(getGroupsQuery))
 
   private val deleteGroup: Long => IO[Completion] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(deleteGroupQuery))
       .use(preparedCommand => preparedCommand.execute(id))
 
@@ -94,7 +94,7 @@ object Group {
     list.map(groupDB => GroupResp(groupDB.id, groupDB.created, groupDB.name)).toList
 
   private def dropRoles: Long => IO[Completion] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(dropRolesQuery))
       .use(preparedCommand => preparedCommand.execute(id))
 

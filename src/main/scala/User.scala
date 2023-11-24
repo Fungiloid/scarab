@@ -1,6 +1,4 @@
 import cats.effect._
-import cats.implicits._
-import cats.data.EitherT
 import org.http4s.{AuthedRoutes, HttpRoutes}
 import org.http4s.dsl.io._
 import org.http4s.circe._
@@ -45,25 +43,25 @@ object User {
   }
 
   private val getUser: Long => IO[UserDB] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getUserQuery))
       .use(preparedQuery => preparedQuery.unique(id))
 
   val createUser: UserPost => IO[UserDB] = (req) => {
     val salt = Util.randomString(20)
     Util.hashStrong(req.password + salt).map(hashed =>
-      Database.session
+      ScarabDatabase.session
         .flatMap(session => session.prepareR(createUserQuery))
         .use(preparedQuery => preparedQuery.unique(Util.offsetDateTimeNow, req.username, hashed, salt))
     ).get
   }
 
   val getUsers: IO[List[UserDB]] =
-    Database.session
+    ScarabDatabase.session
       .use(session => session.execute(getUsersQuery))
 
   val deleteUser: Long => IO[Completion] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(deleteUserQuery))
       .use(preparedCommand => preparedCommand.execute(id))
 

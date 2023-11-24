@@ -9,26 +9,26 @@ import java.time.OffsetDateTime
 object Category {
 
   val getCategory: Long => IO[CategoryDB] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getCategoryQuery))
       .use(preparedQuery => preparedQuery.unique(id))
 
   val updateCategory: (CategoryReq, Long) => IO[CategoryDB] = (req, id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(updateCategoryQuery))
       .use(preparedQuery => preparedQuery.unique(req.name, id))
 
   val createCategory: CategoryReq => IO[CategoryDB] = (req) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(createCategoryQuery))
       .use(preparedQuery => preparedQuery.unique(Util.offsetDateTimeNow, req.name))
 
   val getCategories: IO[List[CategoryDB]] =
-    Database.session
+    ScarabDatabase.session
       .use(session => session.execute(getCategoriesQuery))
 
   val deleteCategory: Long => IO[Completion] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(deleteCategoryQuery))
       .use(preparedCommand => preparedCommand.execute(id))
 

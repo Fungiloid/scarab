@@ -1,54 +1,81 @@
+import Permission.offsetDateTimeMapping
+import cats.data.EitherT
 import cats.effect._
-import skunk.{~, _}
-import skunk.codec.all._
-import skunk.data.Completion
-import skunk.implicits._
+import org.http4s.{AuthedRoutes, HttpRoutes, Response, Status}
+import org.http4s.dsl.io._
+import org.http4s.circe._
+import io.circe.generic.auto._
+import io.circe.parser._
+import io.circe.syntax._
+import org.http4s.circe.CirceEntityCodec.circeEntityDecoder
+import org.http4s.multipart.{Multipart, Part}
+import slick.jdbc.PostgresProfile.api._
 
+import java.sql.Timestamp
 import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
+import java.util.{Locale, UUID}
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
 
 object Image {
 
-  val getImage: Long => IO[ImageDB] = (id) =>
-    Database.session
-      .flatMap(session => session.prepareR(getImageQuery))
-      .use(preparedQuery => preparedQuery.unique(id))
+  case class ImageDB(id: UUID, created: OffsetDateTime, title: String, description:String, location:String)
 
-  val updateImage: (ImageReq, Long) => IO[ImageDB] = (req, id) =>
-    Database.session
-      .flatMap(session => session.prepareR(updateImageQuery))
-      .use(preparedQuery => preparedQuery.unique(req.name, req.description, id))
+  class ImageTable(tag: Tag) extends Table[ImageDB](tag, "images") {
+    def id = column[UUID]("id", O.PrimaryKey)
 
-  val createImage: ImageReq => IO[ImageDB] = (req) =>
-    Database.session
-      .flatMap(session => session.prepareR(createImageQuery))
-      .use(preparedQuery => preparedQuery.unique(Util.offsetDateTimeNow, "/dummy/path", req.name, req.description))
+    def created = column[OffsetDateTime]("created")(offsetDateTimeMapping)
 
-  val getImages: IO[List[ImageDB]] =
-    Database.session
-      .use(session => session.execute(getImagesQuery))
+    def title = column[String]("title")
+    def description = column[String]("description")
+    def location = column[String]("location")
 
-  val deleteImage: Long => IO[Completion] = (id) =>
-    Database.session
-      .flatMap(session => session.prepareR(deleteImageQuery))
-      .use(preparedCommand => preparedCommand.execute(id))
+    def * = (id, created, title, description, location) <> (ImageDB.tupled, ImageDB.unapply)
+  }
 
-  val imageDBToImageResponse: List[ImageDB] => List[ImageResp] = (list) =>
-    list.map(imgDB => ImageResp(imgDB.id, imgDB.created, imgDB.location, imgDB.name, imgDB.description)).toList
+  val imageTable = TableQuery[ImageTable]
 
-  val createImageQuery: Query[OffsetDateTime *: String *: String *: String *:EmptyTuple, ImageDB] =
-    sql"INSERT INTO images(created, location, name, description) VALUES($timestamptz, $varchar, $varchar, $varchar) RETURNING *"
-      .query(int8 ~ timestamptz ~ varchar ~ varchar ~ varchar).gmap[ImageDB]
+  case class ImageResp(id: UUID, created: OffsetDateTime, title: String, description:String, location:String)
 
-  val getImageQuery: Query[Long, ImageDB] =
-    sql"SELECT * FROM images WHERE id = $int8".query(int8 ~ timestamptz ~ varchar ~ varchar ~ varchar).gmap[ImageDB]
+  case class ImagePost(title: String, description:String)
 
-  val updateImageQuery: Query[String *: String *: Long *: EmptyTuple, ImageDB] =
-    sql"UPDATE images SET name = $varchar, description = $varchar  WHERE id = $int8 RETURNING *".query(int8 ~ timestamptz ~ varchar ~ varchar ~ varchar).gmap[ImageDB]
+  case class ImagePut(title: String, description:String)
 
-  val getImagesQuery: Query[Void, ImageDB] =
-    sql"SELECT * FROM images".query(int8 ~ timestamptz ~ varchar ~ varchar ~ varchar).gmap[ImageDB]
+  def routes: () => AuthedRoutes[Claims, IO] = () => {
+    AuthedRoutes.of[Claims, IO] {
+      case req@POST -> Root as claims =>
+        req.req.decode[Multipart[IO]] { multipart =>
+          multipart.parts.find(_.name.contains("file")) match {
 
-  val deleteImageQuery: Command[Long] =
-    sql"DELETE FROM images WHERE id = $int8"
-      .command
+            case Some(filePart) =>
+              val filename = filePart.filename.getOrElse("default")
+              S3.uploadFile(filename, filePart)
+                .flatMap { putResponse => {
+                  Ok(s"File $filename uploaded successfully")
+                }
+                }.handleErrorWith { error => {
+                System.out.println(error.getStackTrace)
+                InternalServerError(s"File upload failed: ${error.getMessage}")
+              }
+              }
+            case None =>
+              BadRequest("Missing file part in the request")
+
+
+          }
+        }
+    }
+  }
+
+  private def createImage(imagePost: ImagePost, l:String): Future[Either[ErrorJson, ImageDB]]  = {
+    val imageDB = ImageDB(id = UUID.randomUUID(), created = Util.offsetDateTimeNow, title = imagePost.title, description = imagePost.description, location = l)
+    //EitherT(IO.fromFuture(IO(
+      DatabaseConnector.db.run(imageTable += imageDB).map { _ =>
+        Right(imageDB)
+      }.recover {
+        case exception: Throwable => Left(ErrorJson(500, exception.getMessage))
+      }
+    //)))
+  }
 }

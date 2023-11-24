@@ -9,26 +9,26 @@ import java.time.OffsetDateTime
 object Comment {
 
   val getComment: Long => IO[CommentDB] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getCommentQuery))
       .use(preparedQuery => preparedQuery.unique(id))
 
   val updateComment: (CommentReq, Long) => IO[CommentDB] = (req, id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(updateCommentQuery))
       .use(preparedQuery => preparedQuery.unique(req.text, id))
 
   val createComment: CommentReq => IO[CommentDB] = (req) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(createCommentQuery))
       .use(preparedQuery => preparedQuery.unique(Util.offsetDateTimeNow, req.text))
 
   val getComments: IO[List[CommentDB]] =
-    Database.session
+    ScarabDatabase.session
       .use(session => session.execute(getCommentsQuery))
 
   val deleteComment: Long => IO[Completion] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(deleteCommentQuery))
       .use(preparedCommand => preparedCommand.execute(id))
 

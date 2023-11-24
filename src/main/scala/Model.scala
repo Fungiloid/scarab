@@ -10,7 +10,7 @@ final case class NoJWTSecretSet() extends Exception("no secret for JWT found. se
 // Meta Models
 case class ErrorJson(code:Int, message:String)
 case class ResponseList[A](page:Long, perPage:Long, totalResults:Long, results:List[A])
-case class Claims(userId: Long, permissions: List[String])
+case class Claims(userId: String, permissions: List[String])
 
 case class Login(username: String, password: String)
 

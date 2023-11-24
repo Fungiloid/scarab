@@ -9,26 +9,26 @@ import java.time.OffsetDateTime
 object Tag {
 
   val getTag: Long => IO[TagDB] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getTagQuery))
       .use(preparedQuery => preparedQuery.unique(id))
 
   val updateTag: (TagReq, Long) => IO[TagDB] = (req, id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(updateTagQuery))
       .use(preparedQuery => preparedQuery.unique(req.name, id))
 
   val createTag: TagReq => IO[TagDB] = (req) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(createTagQuery))
       .use(preparedQuery => preparedQuery.unique(Util.offsetDateTimeNow, req.name))
 
   val getTags: IO[List[TagDB]] =
-    Database.session
+    ScarabDatabase.session
       .use(session => session.execute(getTagsQuery))
 
   val deleteTag: Long => IO[Completion] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(deleteTagQuery))
       .use(preparedCommand => preparedCommand.execute(id))
 

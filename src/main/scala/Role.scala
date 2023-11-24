@@ -11,17 +11,19 @@ import skunk.{~, _}
 import skunk.codec.all._
 import skunk.data.Completion
 import skunk.implicits._
-import Permission.{PermissionDB, permissionDBToPermissionResponse, PermissionResp}
+import Permission.{PermissionDB, permissionDBListToPermissionResponse, PermissionResp}
 
 import java.time.OffsetDateTime
 import java.util.UUID
 
 object Role {
 
-  case class RoleResp(id:UUID, created:OffsetDateTime, name:String, permissions: List[PermissionResp] = List.empty)
+  case class RoleResp(id:UUID, created:OffsetDateTime, name:String, permissions: Seq[PermissionResp] = List.empty)
   case class RoleDB(id:UUID, created:OffsetDateTime, name:String)
-  case class RolePost(name: String, permissions: Option[List[UUID]] = Option.empty)
-  case class RolePut(name: Option[String] = Option.empty, permissions: Option[List[UUID]] = Option.empty)
+  case class RolePost(name: String)
+  case class RolePut(name: Option[String] = Option.empty)
+
+  case class RolePostPermissions(permissions: Seq[String] = List.empty)
 
   def routes : () => HttpRoutes[IO] = () => {
     HttpRoutes.of[IO] {
@@ -30,7 +32,7 @@ object Role {
         Role.getRole(UUID.fromString(id))
           .map(roleDB => RoleResp(roleDB.id, roleDB.created, roleDB.name))
           .flatMap(roleResp => Role.getRolePermissions(UUID.fromString(id))
-            .map(permissionsDB => Permission.permissionDBToPermissionResponse(permissionsDB))
+            .map(permissionsDB => Permission.permissionDBListToPermissionResponse(permissionsDB))
             .map(permResp => RoleResp(roleResp.id, roleResp.created, roleResp.name, permResp)))
           .flatMap(roleResp => Ok(roleResp.asJson))
           .handleErrorWith(t => InternalServerError(t.toString))
@@ -40,14 +42,14 @@ object Role {
         for {
           requestBody <- req.as[RolePut]
           resp <- Role.updateRole(requestBody, UUID.fromString(id))
-            .semiflatMap(roleDB => getRolePermissions(roleDB.id).map(permissionsDB => permissionDBToPermissionResponse(permissionsDB)).map(permissionsResp => RoleResp(roleDB.id, roleDB.created, roleDB.name, permissionsResp)))
+            .semiflatMap(roleDB => getRolePermissions(roleDB.id).map(permissionsDB => permissionDBListToPermissionResponse(permissionsDB)).map(permissionsResp => RoleResp(roleDB.id, roleDB.created, roleDB.name, permissionsResp)))
             .foldF(errorJson => InternalServerError(errorJson).map(resp => resp.withStatus(org.http4s.Status(errorJson.code))), roleResp => Ok(roleResp.asJson)).handleErrorWith(t => InternalServerError(t.toString))
         } yield (resp)
       case req@POST -> Root =>
         for {
           requestBody <- req.as[RolePost]
-          resp <- Role.createRoleWithPermissions(requestBody)
-              .semiflatMap(roleDB => getRolePermissions(roleDB.id).map(permissionsDB => permissionDBToPermissionResponse(permissionsDB)).map(permissionsResp => RoleResp(roleDB.id, roleDB.created, roleDB.name, permissionsResp)))
+          resp <- Role.createRole(requestBody)
+              .semiflatMap(roleDB => getRolePermissions(roleDB.id).map(permissionsDB => permissionDBListToPermissionResponse(permissionsDB)).map(permissionsResp => RoleResp(roleDB.id, roleDB.created, roleDB.name, permissionsResp)))
             .foldF(
               errorJson => InternalServerError(errorJson).map(resp => resp.withStatus(org.http4s.Status(errorJson.code))),
               roleResp => Created(roleResp.asJson)
@@ -58,7 +60,7 @@ object Role {
           .map(roles => Role.RoleDBToRoleResponse(roles))
           .map(list => list.map(roleResp =>
             Role.getRolePermissions(roleResp.id)
-              .map(permissionsDB => Permission.permissionDBToPermissionResponse(permissionsDB))
+              .map(permissionsDB => Permission.permissionDBListToPermissionResponse(permissionsDB))
               .map(permResp => RoleResp(roleResp.id, roleResp.created, roleResp.name, permResp))
           )
           )
@@ -66,45 +68,47 @@ object Role {
           .map(list => list.asJson)
           .flatMap(json => Ok(json))
           .handleErrorWith(t => InternalServerError(t.toString))
-
+      case req@POST -> Root / id / "permissions" =>
+          for {
+            requestBody <- req.as[RolePostPermissions]
+            response <- ScarabDatabase.session.use(session => session.transaction.use(transaction =>
+                dropPermissions(UUID.fromString(id), session)
+                  .flatMap(_ => assignPermissions(UUID.fromString(id), requestBody.permissions.toList.map(id => UUID.fromString(id)), session))
+              )
+                .flatMap(_ => getRolePermissions(UUID.fromString(id))
+                  .map(permissionsDB => permissionDBListToPermissionResponse(permissionsDB))
+                  .flatMap(permissions => getRole(UUID.fromString(id)).map(roleDB => RoleResp(roleDB.id, roleDB.created, roleDB.name, permissions))))
+              ).attempt.flatMap(either => either.fold(error => InternalServerError(error.toString), roleResponse => Ok(roleResponse.asJson)))
+          } yield(response)
     }
   }
 
   private def getRole: (UUID) => IO[RoleDB] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getRoleQuery))
       .use(preparedQuery => preparedQuery.unique(id))
 
   private def getRolePermissions: UUID => IO[List[PermissionDB]] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(getPermissionsQuery))
       .use(preparedQuery => preparedQuery.stream(id,1000).compile.toList)
 
   private def updateRole: (RolePut, UUID) => EitherT[IO, ErrorJson, RoleDB] = (req, id) => {
-    val res: IO[Either[ErrorJson, RoleDB]] = Database.session.use { session =>
-      session.transaction.use { _ =>
-        session.prepareR(updateRoleQuery).use(pq => pq.unique(req.name, id))
-          .flatMap(roleDB => dropPermissions(id).flatMap(_ => assignPermissions(id, req.permissions.getOrElse(List.empty), session).map(_ => roleDB)))
-      }.attempt.map(either => either.left.map(_ => ErrorJson(500, "error updating role")))
-    }
-    EitherT(res)
+    EitherT(
+      ScarabDatabase.session
+        .flatMap(session => session.prepareR(updateRoleQuery))
+        .use(pq => pq.unique(req.name, id))
+        .attempt.map(either => either.left.map(_ => ErrorJson(500, "error updating role")))
+    )
   }
 
-  private def createRoleWithPermissions: RolePost => EitherT[IO, ErrorJson, RoleDB] = (req) => {
-    val res: IO[Either[ErrorJson, RoleDB]] = Database.session.use { session =>
-      session.transaction.use { _ =>
-        createRole(req, session)
-          .flatMap(roleDB => assignPermissions(roleDB.id, req.permissions.getOrElse(List.empty), session)
-            .map(_ => roleDB)
-          )
-      }.attempt.map(either => either.left.map(_ => ErrorJson(500, "error creating role")))
-    }
-    EitherT(res)
-  }
-
-  private def createRole: (RolePost, Session[IO]) => IO[RoleDB] = (req, session) =>
-    session.prepareR(createRoleQuery)
-      .use(preparedQuery => preparedQuery.unique(Util.offsetDateTimeNow, req.name))
+  private def createRole: RolePost => EitherT[IO, ErrorJson, RoleDB] = (req) =>
+    EitherT(
+      ScarabDatabase.session
+        .flatMap(session => session.prepareR(createRoleQuery))
+        .use(preparedQuery => preparedQuery.unique(Util.offsetDateTimeNow, req.name))
+        .attempt.map(either => either.left.map(_ => ErrorJson(500, "error creating role")))
+    )
 
   private def assignPermissions: (UUID, List[UUID], Session[IO]) => IO[List[UUID]] = (roleId, permissions, session) => {
     session.prepareR(assignPermissionCommand).use { cmd =>
@@ -113,17 +117,16 @@ object Role {
   }
 
   private def getRoles: IO[List[RoleDB]] =
-    Database.session
+    ScarabDatabase.session
       .use(session => session.execute(getRolesQuery))
 
   private def deleteRole: UUID => IO[Completion] = (id) =>
-    Database.session
+    ScarabDatabase.session
       .flatMap(session => session.prepareR(deleteRoleQuery))
       .use(preparedCommand => preparedCommand.execute(id))
 
-  private def dropPermissions : UUID => IO[Completion] = (id) =>
-    Database.session
-      .flatMap(session => session.prepareR(dropPermissionsQuery))
+  private def dropPermissions : (UUID, Session[IO]) => IO[Completion] = (id, session) =>
+    session.prepareR(dropPermissionsQuery)
       .use(preparedCommand => preparedCommand.execute(id))
 
   private def RoleDBToRoleResponse: List[RoleDB] => List[RoleResp] = (list) =>
